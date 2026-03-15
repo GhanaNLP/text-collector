@@ -19,7 +19,6 @@ from tkinter import scrolledtext, messagebox, font as tkfont
 
 HF_OUTPUT_REPO = "ghananlpcommunity/prestine-twi"
 HF_INPUT_REPO = "ghananlpcommunity/twi-english-paragraph-dataset_news"
-HF_TOKEN_B64 = "aGZfam5YTndBYlR6WmNtYlZ6d1ByUW16RnlJbURNakFMRkdH"  # encoded token
 PUSH_EVERY = 10
 
 # Expected character range for 4-part text (~500 words each = ~2000 words total)
@@ -143,8 +142,8 @@ class CollectorApp:
             decoded = base64.urlsafe_b64decode(code + padding).decode()
             config = json.loads(decoded)
             
-            # Validate structure
-            if not all(k in config for k in ["repo", "indices"]):
+            # Validate structure - now includes token
+            if not all(k in config for k in ["repo", "indices", "token"]):
                 raise ValueError("Invalid code format")
             
             # Generate volunteer hash
@@ -486,7 +485,12 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
                 "Install: pip install huggingface_hub pandas")
             return
         
-        token = base64.b64decode(HF_TOKEN_B64).decode()
+        # Get token from volunteer code
+        token = self.config.get("token")
+        if not token:
+            messagebox.showerror("Error", "No access token in volunteer code")
+            return
+        
         api = HfApi(token=token)
         
         try:

@@ -31,22 +31,46 @@ ghananlpcommunity/prestine-twi                         ← output (Twi texts)
 
 ## Generate Volunteer Codes
 
-Open `scripts/generate_codes.py` and configure:
+The code generation script now takes the HF token as a command-line argument (not hardcoded).
 
-```python
-TOTAL_PARAGRAPHS = 257000           # Total in dataset
-PARAGRAPHS_PER_VOLUNTEER = 1000     # Assign this many per volunteer
-NUM_VOLUNTEERS = 10                 # How many volunteers
-```
-
-Run:
+**Usage:**
 ```bash
-python scripts/generate_codes.py
+cd scripts
+python generate_codes.py <hf_token> [--target-samples N] [--volunteers N]
 ```
+
+**Examples:**
+```bash
+# Generate 10,000 texts split across 10 volunteers (1,000 each)
+python generate_codes.py hf_TOKEN --target-samples 10000 --volunteers 10
+
+# Generate 5,000 texts split across 5 volunteers (1,000 each)
+python generate_codes.py hf_TOKEN --target-samples 5000 --volunteers 5
+
+# Use defaults (10,000 samples, 10 volunteers)
+python generate_codes.py hf_TOKEN
+```
+
+**Parameters:**
+- `hf_token`: HuggingFace token with write access to `ghananlpcommunity/prestine-twi`
+- `--target-samples`: Total number of Twi texts to generate (default: 10,000)
+- `--volunteers`: Number of volunteers to distribute work across (default: 10)
+
+**How it works:**
+- Each prompt paragraph generates 1 Twi text (4-part: monologue, narrative, dialogue, storyful)
+- Script assigns unique paragraphs to each volunteer (no overlap)
+- Work is split evenly; last volunteer gets any remainder
+- Maximum: 257,000 samples (total paragraphs in dataset)
 
 This prints a table and saves `volunteer_codes.json`.
 
-**Share individual codes only. Never share `volunteer_codes.json`.**
+**IMPORTANT SECURITY NOTES:**
+- HF token is NOT stored in the script — you provide it each time
+- Each volunteer code contains the token embedded (base64-encoded)
+- Token should have fine-grained write access ONLY to `ghananlpcommunity/prestine-twi`
+- Share individual codes ONLY with trusted volunteers
+- Keep `volunteer_codes.json` PRIVATE
+- Never commit `volunteer_codes.json` to git
 
 ---
 
@@ -77,14 +101,32 @@ The dataset is viewable in HuggingFace's dataset viewer with all columns.
 
 ## Troubleshooting
 
-**Volunteer needs more paragraphs**
-Increase `PARAGRAPHS_PER_VOLUNTEER` or `NUM_VOLUNTEERS` and regenerate codes. Existing codes remain valid.
+**Need more/fewer samples**
+Re-run `generate_codes.py` with different `--target-samples` value. Existing codes become invalid (regenerate all).
+
+**Need more/fewer volunteers**
+Re-run `generate_codes.py` with different `--volunteers` value.
 
 **Push failures**
-Check HF token has write access to `ghananlpcommunity/prestine-twi`. Token is base64-encoded in `collector.py` (line 13).
+- Ensure HF token has write access to `ghananlpcommunity/prestine-twi`
+- Use HuggingFace fine-grained token with WRITE permission ONLY to that repo
+- Check token hasn't expired (HF tokens can have expiration dates)
+- Regenerate codes if token was revoked/changed
 
 **Volunteer restarts**
 They re-run `python collector.py` — already collected texts are skipped automatically.
+
+**Token leaked/compromised**
+1. Revoke the token immediately in HuggingFace settings
+2. Generate a new fine-grained token (write access to prestine-twi only)
+3. Re-run `generate_codes.py` with new token
+4. Redistribute new codes to ALL volunteers (old codes won't work)
+
+**Change target samples mid-project**
+1. Calculate how many samples already collected
+2. Generate new codes with `--target-samples` set to REMAINING samples needed
+3. Assign different paragraph ranges (start from where old codes ended)
+4. Distribute new codes to new volunteers
 
 **Dataset issues**
 Input dataset must be at `ghananlpcommunity/twi-english-paragraph-dataset_news` with `train.parquet` containing `ENGLISH` column.
