@@ -3,12 +3,14 @@
 Twi Text Collector — Volunteer App
 ===================================
 Collects Twi text generated via Gemini from assigned English news paragraphs.
+Pushes to HuggingFace as a structured dataset (not raw text files).
 """
 
 import base64
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 import tkinter as tk
@@ -20,6 +22,51 @@ HF_INPUT_REPO = "ghananlpcommunity/twi-english-paragraph-dataset_news"
 HF_TOKEN_B64 = "aGZfam5YTndBYlR6WmNtYlZ6d1ByUW16RnlJbURNakFMRkdH"  # encoded token
 PUSH_EVERY = 10
 
+# Expected character range for 4-part text (~500 words each = ~2000 words total)
+# 1 word ≈ 6 chars in Twi, so 2000 words ≈ 12,000 chars
+# Allow reasonable variance: 8,000 - 18,000 chars
+MIN_CHARS = 8000
+MAX_CHARS = 18000
+
+
+def remove_consecutive_repetitions(text):
+    """Remove consecutive repeated sentences (adapted from transcriber.py)"""
+    parts = re.split(r'(\s*[.!?\n]+\s*)', text)
+    sentences = []
+    for i in range(0, len(parts) - 1, 2):
+        s = parts[i].strip()
+        delim = parts[i+1] if i+1 < len(parts) else " "
+        if s:
+            sentences.append((s, delim))
+    if parts and parts[-1].strip():
+        sentences.append((parts[-1].strip(), ""))
+
+    if not sentences:
+        return text, 0
+
+    cleaned = [sentences[0]]
+    removed = 0
+
+    i = 1
+    while i < len(sentences):
+        matched = False
+        max_block = (len(sentences) - i) // 2
+        for k in range(min(max_block, 10), 0, -1):
+            block = [s for s, _ in sentences[i:i+k]]
+            prev_block = [s for s, _ in cleaned[-k:]] if len(cleaned) >= k else None
+            if prev_block and [s.lower() for s in block] == [s.lower() for s in prev_block]:
+                removed += k
+                i += k
+                matched = True
+                break
+        if not matched:
+            cleaned.append(sentences[i])
+            i += 1
+
+    result = " ".join(s + d for s, d in cleaned).strip()
+    return result, removed
+
+
 class CollectorApp:
     def __init__(self):
         self.root = tk.Tk()
@@ -30,7 +77,8 @@ class CollectorApp:
         self.vol_hash = None
         self.paragraphs = []
         self.current_idx = 0
-        self.collected = []
+        self.collected_indices = []
+        self.collected_texts = set()  # For duplicate detection
         self.pending_push = []
         self.texts_dir = None
         self.skipped_log = None
@@ -156,23 +204,29 @@ class CollectorApp:
             with open(para_file) as f:
                 self.paragraphs = json.load(f)
         
-        # Load already collected
+        # Load already collected indices and texts
         for f in self.texts_dir.glob("*.txt"):
             idx = int(f.stem.split("_")[0])
-            if idx not in self.collected:
-                self.collected.append(idx)
+            if idx not in self.collected_indices:
+                self.collected_indices.append(idx)
+                # Load text content for duplicate detection
+                try:
+                    with open(f, encoding="utf-8") as tf:
+                        self.collected_texts.add(tf.read().strip())
+                except:
+                    pass
         
         # Load skipped
         if self.skipped_log.exists():
             with open(self.skipped_log) as f:
                 for line in f:
                     idx = int(line.strip())
-                    if idx not in self.collected:
-                        self.collected.append(idx)
+                    if idx not in self.collected_indices:
+                        self.collected_indices.append(idx)
         
         # Find next uncollected
         for i, _ in enumerate(self.paragraphs):
-            if i not in self.collected:
+            if i not in self.collected_indices:
                 self.current_idx = i
                 break
         else:
@@ -184,7 +238,7 @@ class CollectorApp:
         toolbar = tk.Frame(self.root, bg="#2c3e50", height=50)
         toolbar.pack(side="top", fill="x")
         
-        progress_text = f"{len(self.collected)}/{len(self.paragraphs)}"
+        progress_text = f"{len(self.collected_indices)}/{len(self.paragraphs)}"
         tk.Label(toolbar, text=progress_text, 
                 font=("Arial", 11, "bold"),
                 bg="#2c3e50", fg="white").pack(side="left", padx=15)
@@ -198,7 +252,7 @@ class CollectorApp:
         main.pack(expand=True, fill="both")
         
         # Check if all done
-        if len(self.collected) >= len(self.paragraphs):
+        if len(self.collected_indices) >= len(self.paragraphs):
             self.show_completion(main)
             return
         
@@ -270,7 +324,7 @@ class CollectorApp:
                 fg="#27ae60").pack(pady=(100, 20))
         
         tk.Label(parent, 
-                text=f"You've collected {len(self.collected)} texts.\nThank you!",
+                text=f"You've collected {len(self.collected_indices)} texts.\nThank you!",
                 font=("Arial", 12)).pack()
         
         # Final push if needed
@@ -297,7 +351,7 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
         self.status_bar.config(text="✓ Paragraph copied!", fg="#27ae60")
     
     def validate_text(self, event=None):
-        """Validate pasted Twi text"""
+        """Validate pasted Twi text - check length and repetitions"""
         text = self.text_input.get("1.0", "end-1c").strip()
         
         if not text:
@@ -305,31 +359,45 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
             self.status_bar.config(text="", fg="#7f8c8d")
             return
         
-        # Check length (expecting ~2000 words total)
-        word_count = len(text.split())
+        # Remove consecutive repetitions
+        cleaned, n_removed = remove_consecutive_repetitions(text)
+        char_count = len(cleaned)
         
-        if word_count < 1000:
-            self.status_bar.config(
-                text=f"⚠ Too short ({word_count} words). Expected ~2000 words.",
-                fg="#e67e22")
+        # Build status message
+        warnings = []
+        
+        if n_removed > 0:
+            warnings.append(f"⚠ {n_removed} repeated sentence(s) will be auto-removed")
+        
+        if char_count < MIN_CHARS:
+            warnings.append(f"Too short: {char_count:,} chars (need ≥{MIN_CHARS:,})")
             self.save_btn.config(state="disabled")
-        elif word_count > 3000:
-            self.status_bar.config(
-                text=f"⚠ Too long ({word_count} words). Expected ~2000 words.",
-                fg="#e67e22")
+        elif char_count > MAX_CHARS:
+            warnings.append(f"Too long: {char_count:,} chars (need ≤{MAX_CHARS:,})")
             self.save_btn.config(state="disabled")
         else:
-            self.status_bar.config(
-                text=f"✓ Looks good ({word_count} words)",
-                fg="#27ae60")
+            if warnings:
+                self.status_bar.config(
+                    text=" | ".join(warnings) + f" | {char_count:,} chars ✓",
+                    fg="#e67e22")
+            else:
+                self.status_bar.config(
+                    text=f"✓ Looks good ({char_count:,} chars)",
+                    fg="#27ae60")
             self.save_btn.config(state="normal")
+            return
+        
+        # If we get here, there are blocking errors
+        self.status_bar.config(
+            text=" | ".join(warnings),
+            fg="#e67e22")
     
     def skip_current(self):
         """Skip current paragraph"""
         with open(self.skipped_log, "a") as f:
             f.write(f"{self.current_idx}\n")
         
-        self.collected.append(self.current_idx)
+        self.collected_indices.append(self.current_idx)
         self.next_paragraph()
     
     def save_and_next(self):
@@ -339,19 +407,33 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
         if not text:
             return
         
-        # Save locally
+        # Remove consecutive repetitions
+        cleaned, n_removed = remove_consecutive_repetitions(text)
+        
+        # Check for duplicates
+        if cleaned in self.collected_texts:
+            messagebox.showwarning(
+                "Duplicate",
+                "This text already exists in your collected data.\nNot saved."
+            )
+            return
+        
+        # Save locally with cleaned text
         filename = f"{self.current_idx:05d}_{self.vol_hash}.txt"
         filepath = self.texts_dir / filename
         
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write(text)
+            f.write(cleaned)
         
         # Track for push
-        self.collected.append(self.current_idx)
+        self.collected_indices.append(self.current_idx)
+        self.collected_texts.add(cleaned)
         self.pending_push.append({
             "index": self.current_idx,
-            "text": text,
-            "filename": filename
+            "text": cleaned,
+            "source_paragraph": self.paragraphs[self.current_idx],
+            "filename": filename,
+            "repetitions_removed": n_removed
         })
         
         # Auto-push every N texts
@@ -364,7 +446,7 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
         """Load next uncollected paragraph"""
         # Find next
         for i, _ in enumerate(self.paragraphs):
-            if i not in self.collected:
+            if i not in self.collected_indices:
                 self.current_idx = i
                 break
         else:
@@ -392,15 +474,16 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
         self.push_to_hf()
     
     def push_to_hf(self):
-        """Push collected texts to HuggingFace"""
+        """Push collected texts to HuggingFace as structured dataset"""
         if not self.pending_push:
             return
         
         try:
             from huggingface_hub import HfApi
+            import pandas as pd
         except ImportError:
             messagebox.showerror("Error", 
-                "Install: pip install huggingface_hub")
+                "Install: pip install huggingface_hub pandas")
             return
         
         token = base64.b64decode(HF_TOKEN_B64).decode()
@@ -412,16 +495,54 @@ Mix English words naturally as done in spoken Twi. Return ONLY the Twi text, no 
                            repo_type="dataset", 
                            exist_ok=True)
             
-            # Upload each file
-            for item in self.pending_push:
-                filepath = self.texts_dir / item["filename"]
-                api.upload_file(
-                    path_or_fileobj=str(filepath),
-                    path_in_repo=f"texts/{item['filename']}",
+            # Load existing dataset if it exists
+            try:
+                from huggingface_hub import hf_hub_download
+                existing_file = hf_hub_download(
                     repo_id=HF_OUTPUT_REPO,
+                    filename="data.parquet",
                     repo_type="dataset",
-                    commit_message=f"Volunteer {self.vol_hash}: +1 text"
+                    token=token
                 )
+                existing_df = pd.read_parquet(existing_file)
+            except:
+                existing_df = pd.DataFrame(columns=[
+                    "id", "volunteer_hash", "source_paragraph", 
+                    "twi_text", "char_count", "repetitions_removed", "timestamp"
+                ])
+            
+            # Prepare new rows
+            new_rows = []
+            for item in self.pending_push:
+                new_rows.append({
+                    "id": f"{item['index']:05d}_{self.vol_hash}",
+                    "volunteer_hash": self.vol_hash,
+                    "source_paragraph": item["source_paragraph"],
+                    "twi_text": item["text"],
+                    "char_count": len(item["text"]),
+                    "repetitions_removed": item["repetitions_removed"],
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                })
+            
+            # Append new data
+            new_df = pd.DataFrame(new_rows)
+            combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+            
+            # Save as parquet
+            temp_file = self.texts_dir / "temp_data.parquet"
+            combined_df.to_parquet(temp_file, index=False)
+            
+            # Upload to HF
+            api.upload_file(
+                path_or_fileobj=str(temp_file),
+                path_in_repo="data.parquet",
+                repo_id=HF_OUTPUT_REPO,
+                repo_type="dataset",
+                commit_message=f"Volunteer {self.vol_hash}: +{len(new_rows)} text(s)"
+            )
+            
+            # Clean up temp file
+            temp_file.unlink()
             
             count = len(self.pending_push)
             self.pending_push = []
