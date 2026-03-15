@@ -39,9 +39,12 @@ Paste your volunteer code when prompted and click **"Download & Start →"**.
 1. App shows one English news paragraph at a time
 2. Click **"✦ Gemini Prompt"** → paste into [gemini.google.com](https://gemini.google.com) → send
 3. Copy Gemini's Twi response → paste into the app textarea
-4. App validates length (~2000 words expected for 4-part text)
+4. App automatically:
+   - Removes consecutive repeated sentences
+   - Validates length (8,000-18,000 chars expected)
+   - Checks for duplicate submissions
 5. Click **"Save & Next →"** — auto-saves and moves to next paragraph
-6. Every 10 texts are automatically uploaded to HuggingFace
+6. Every 10 texts are automatically uploaded to HuggingFace as a structured dataset
 
 ---
 
