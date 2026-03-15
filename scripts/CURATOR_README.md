@@ -57,17 +57,21 @@ Check collected texts at:
 https://huggingface.co/datasets/ghananlpcommunity/prestine-twi
 ```
 
-Files are organized as:
-```
-texts/<index>_<vol_hash>.txt
-```
+Dataset is stored as `data.parquet` with columns:
+- `id`: Unique identifier (index + volunteer hash)
+- `volunteer_hash`: 8-character volunteer identifier
+- `source_paragraph`: Original English paragraph
+- `twi_text`: Generated Twi text (cleaned)
+- `char_count`: Character count of Twi text
+- `repetitions_removed`: Number of repeated sentences removed
+- `timestamp`: Collection timestamp
 
 Each volunteer has a unique 8-character hash (derived from their code). Commits show:
 ```
-Volunteer a3f8c912: +1 text
+Volunteer a3f8c912: +10 text(s)
 ```
 
-No merge step needed — final dataset is the complete repo contents.
+The dataset is viewable in HuggingFace's dataset viewer with all columns.
 
 ---
 
